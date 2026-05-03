@@ -1,0 +1,168 @@
+# IMDB Sentiment Analysis – Full Script Version
+# (TensorFlow / Keras in Google Colab)
+
+import tensorflow as tf
+import tensorflow_datasets as tfds
+from tensorflow.keras import layers, models
+from tensorflow.keras.models import load_model
+
+print("TensorFlow version:", tf.__version__)
+print("GPUs:", tf.config.list_physical_devices("GPU"))
+
+# -----------------------------------------------------------
+# 1. Load IMDB dataset (raw text + labels)
+# -----------------------------------------------------------
+
+train_raw, test_raw = tfds.load(
+    "imdb_reviews",
+    split=["train", "test"],
+    as_supervised=True  # returns (text, label)
+)
+
+# -----------------------------------------------------------
+# 2. Build train / validation / test splits with tf.data
+# -----------------------------------------------------------
+
+BUFFER_SIZE = 10_000
+BATCH_SIZE = 64
+
+# Shuffle full training data
+train_raw = train_raw.shuffle(BUFFER_SIZE, reshuffle_each_iteration=True)
+
+VAL_SIZE = 5_000
+val_raw = train_raw.take(VAL_SIZE)
+train_raw = train_raw.skip(VAL_SIZE)
+
+# -----------------------------------------------------------
+# 3. TextVectorization for tokenization
+# -----------------------------------------------------------
+
+VOCAB_SIZE = 20_000
+SEQUENCE_LENGTH = 200
+
+vectorize_layer = layers.TextVectorization(
+    max_tokens=VOCAB_SIZE,
+    output_mode="int",
+    output_sequence_length=SEQUENCE_LENGTH,
+)
+
+# Adapt on raw training text (unbatched)
+train_text_only = train_raw.map(lambda x, y: x)
+vectorize_layer.adapt(train_text_only)
+
+def vectorize_text(text, label):
+    # TextVectorization expects rank-2 or -3 input; ensure correct shape
+    text = tf.expand_dims(text, -1)
+    return vectorize_layer(text), label
+
+# Apply vectorization + batching + prefetch
+train_ds = (
+    train_raw
+    .batch(BATCH_SIZE)
+    .map(vectorize_text)
+    .prefetch(tf.data.AUTOTUNE)
+)
+
+val_ds = (
+    val_raw
+    .batch(BATCH_SIZE)
+    .map(vectorize_text)
+    .prefetch(tf.data.AUTOTUNE)
+)
+
+test_ds = (
+    test_raw
+    .batch(BATCH_SIZE)
+    .map(vectorize_text)
+    .prefetch(tf.data.AUTOTUNE)
+)
+
+# -----------------------------------------------------------
+# 4. Model architecture (Embedding + BiLSTM + dense head)
+# -----------------------------------------------------------
+
+EMBEDDING_DIM = 128
+
+inputs = layers.Input(shape=(SEQUENCE_LENGTH,), dtype="int64")
+
+# Embedding layer: learns word vectors
+x = layers.Embedding(
+    input_dim=VOCAB_SIZE,
+    output_dim=EMBEDDING_DIM,
+    name="word_embedding",
+)(inputs)
+
+# Encoder: bidirectional LSTM over the sequence
+x = layers.Bidirectional(
+    layers.LSTM(64, return_sequences=False)
+)(x)
+
+# Classification head (decoder)
+x = layers.Dense(64, activation="relu")(x)
+x = layers.Dropout(0.5)(x)
+outputs = layers.Dense(1, activation="sigmoid")(x)
+
+model = models.Model(inputs, outputs, name="imdb_sentiment_lstm")
+model.summary()
+
+# -----------------------------------------------------------
+# 5. Compile and train
+# -----------------------------------------------------------
+
+model.compile(
+    loss="binary_crossentropy",
+    optimizer="adam",
+    metrics=["accuracy"],
+)
+
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=5,
+)
+
+# -----------------------------------------------------------
+# 6. Evaluate on the test set
+# -----------------------------------------------------------
+
+test_loss, test_acc = model.evaluate(test_ds)
+print("Test loss:", test_loss)
+print("Test accuracy:", test_acc)
+
+# -----------------------------------------------------------
+# 7. Predict on custom reviews
+# -----------------------------------------------------------
+
+def predict_review(text: str):
+    # Wrap a single string into a batch of size 1
+    text_tensor = tf.constant([text])
+    vectorized = vectorize_layer(text_tensor)
+    prob = model.predict(vectorized)[0][0]
+    label = "positive" if prob >= 0.5 else "negative"
+    return label, float(prob)
+
+examples = [
+    "This movie was absolutely wonderful, I loved every minute.",
+    "This was a waste of two hours, terrible script and bad acting.",
+]
+
+for review in examples:
+    label, p = predict_review(review)
+    print(f"Review: {review}")
+    print(f"Prediction: {label} (p={p:.3f})\n")
+
+# -----------------------------------------------------------
+# 8. Save and reload the trained model (Keras format)
+# -----------------------------------------------------------
+
+# Mount Google Drive if running in Colab (uncomment when in Colab):
+# from google.colab import drive
+# drive.mount("/content/drive")
+
+model_path = "/content/drive/MyDrive/imdb_sentiment_model.keras"
+model.save(model_path)
+print("Saved model to:", model_path)
+
+# Example: reload later
+reloaded_model = load_model(model_path)
+print("Reloaded model:", reloaded_model.name)
