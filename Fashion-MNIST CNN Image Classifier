@@ -1,0 +1,255 @@
+## Project: Fashion-MNIST CNN Image Classifier
+
+**Notebook / Script:** `fashion_mnist_cnn.ipynb` (and/or `fashion_mnist_cnn.py`)  
+**Environment:** Google Colab  
+**Framework:** TensorFlow / Keras
+
+### Objective
+
+Train and evaluate a convolutional neural network (CNN) to classify 28×28 grayscale images of clothing items in the Fashion-MNIST dataset into 10 categories (T-shirt/top, trouser, pullover, dress, coat, sandal, shirt, sneaker, bag, ankle boot).
+
+### What this project does
+
+1. **Loads and explores the dataset**
+   - Uses `tf.keras.datasets.fashion_mnist` (60,000 train, 10,000 test images).
+   - Visualizes sample images with their class labels.
+
+2. **Preprocesses the data**
+   - Normalizes pixel values to the [0, 1] range.
+   - Reshapes images to `(28, 28, 1)` for use with `Conv2D`.
+   - Splits the training data into a train/validation set (90%/10%).
+
+3. **Builds a CNN model in Keras**
+   - Two convolution + max-pooling blocks:
+     - Conv2D(32, 3×3) → MaxPooling2D(2×2)
+     - Conv2D(64, 3×3) → MaxPooling2D(2×2)
+   - Dense head with 128 units and dropout (0.5).
+   - Final Dense layer with softmax over 10 classes.
+
+4. **Trains with callbacks**
+   - Uses the Adam optimizer and sparse categorical cross-entropy loss.
+   - Includes `ModelCheckpoint` to save the best model by validation accuracy.
+   - Uses `EarlyStopping` with patience=3 to avoid overfitting.
+
+5. **Evaluates the model**
+   - Achieves around **91–92% accuracy** on the held-out test set.
+   - Plots a **confusion matrix** to see which clothing categories are confused (for example, shirts vs T-shirts/coats).
+
+6. **Error analysis**
+   - Displays a grid of misclassified test images with their true and predicted labels to inspect typical failure modes.
+
+7. **Saves the trained model**
+   - Saves the final model in the Keras `.keras` format, with an option to save to Google Drive when running in Colab.
+
+### Skills demonstrated
+
+- Building CNNs with TensorFlow/Keras (`Conv2D`, `MaxPooling2D`, `Dropout`, `Dense`)
+- Image preprocessing and normalization
+- Using callbacks (`ModelCheckpoint`, `EarlyStopping`) for more robust training
+- Evaluating models on a test set and analyzing confusion matrices
+- Inspecting misclassified examples for qualitative understanding
+- Saving and reusing trained models in the modern Keras format
+
+
+# Fashion-MNIST CNN – Full Script Version
+# TensorFlow / Keras
+
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.datasets import fashion_mnist
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+print("TensorFlow:", tf.__version__)
+print("GPUs:", tf.config.list_physical_devices("GPU"))
+
+# -----------------------------------------------------------
+# 1. Load Fashion-MNIST dataset
+# -----------------------------------------------------------
+
+# (60,000 train, 10,000 test), each image 28x28 grayscale
+(x_train, y_train), (x_test, y_test) = fashion_mnist.load_data()
+print("Train:", x_train.shape, y_train.shape)
+print("Test :", x_test.shape, y_test.shape)
+
+class_names = [
+    "T-shirt/top", "Trouser", "Pullover", "Dress", "Coat",
+    "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"
+]
+
+# Optional: visualize a 4x4 grid of sample images
+plt.figure(figsize=(8, 8))
+for i in range(16):
+    plt.subplot(4, 4, i + 1)
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow(x_train[i], cmap="gray")
+    plt.xlabel(class_names[y_train[i]])
+plt.tight_layout()
+plt.show()
+
+# -----------------------------------------------------------
+# 2. Normalize and reshape
+# -----------------------------------------------------------
+
+# Scale pixel values to [0, 1]
+x_train = x_train.astype("float32") / 255.0
+x_test  = x_test.astype("float32") / 255.0
+
+# Add channel dimension: (batch, 28, 28, 1)
+x_train = np.expand_dims(x_train, -1)
+x_test  = np.expand_dims(x_test, -1)
+
+print("Train reshaped:", x_train.shape)
+print("Test reshaped :", x_test.shape)
+
+# -----------------------------------------------------------
+# 3. Train/validation split
+# -----------------------------------------------------------
+
+x_train_small, x_val, y_train_small, y_val = train_test_split(
+    x_train, y_train, test_size=0.1, random_state=42
+)
+
+print("Train subset:", x_train_small.shape, y_train_small.shape)
+print("Val        :", x_val.shape, y_val.shape)
+
+# -----------------------------------------------------------
+# 4. Build CNN model
+# -----------------------------------------------------------
+
+def build_cnn_model():
+    inputs = layers.Input(shape=(28, 28, 1))
+
+    # Conv block 1
+    x = layers.Conv2D(32, (3, 3), activation="relu", padding="same")(inputs)
+    x = layers.MaxPooling2D((2, 2))(x)
+
+    # Conv block 2
+    x = layers.Conv2D(64, (3, 3), activation="relu", padding="same")(x)
+    x = layers.MaxPooling2D((2, 2))(x)
+
+    # Dense head
+    x = layers.Flatten()(x)
+    x = layers.Dense(128, activation="relu")(x)
+    x = layers.Dropout(0.5)(x)
+
+    outputs = layers.Dense(10, activation="softmax")(x)
+
+    model = models.Model(inputs, outputs, name="fashion_mnist_cnn")
+    return model
+
+model = build_cnn_model()
+model.summary()
+
+# -----------------------------------------------------------
+# 5. Compile and configure callbacks
+# -----------------------------------------------------------
+
+model.compile(
+    optimizer="adam",
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"],
+)
+
+checkpoint_path = "fashion_mnist_cnn_best.keras"
+
+callbacks = [
+    tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_path,
+        save_best_only=True,
+        monitor="val_accuracy",
+        mode="max",
+        verbose=1,
+    ),
+    tf.keras.callbacks.EarlyStopping(
+        monitor="val_accuracy",
+        mode="max",
+        patience=3,
+        restore_best_weights=True,
+        verbose=1,
+    ),
+]
+
+# -----------------------------------------------------------
+# 6. Train the model
+# -----------------------------------------------------------
+
+EPOCHS = 10
+BATCH_SIZE = 128
+
+history = model.fit(
+    x_train_small,
+    y_train_small,
+    batch_size=BATCH_SIZE,
+    epochs=EPOCHS,
+    validation_data=(x_val, y_val),
+    callbacks=callbacks,
+)
+
+# -----------------------------------------------------------
+# 7. Evaluate on the test set
+# -----------------------------------------------------------
+
+test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
+print("Test loss:", test_loss)
+print("Test accuracy:", test_acc)
+
+# -----------------------------------------------------------
+# 8. Confusion matrix
+# -----------------------------------------------------------
+
+y_pred_probs = model.predict(x_test, batch_size=256)
+y_pred = np.argmax(y_pred_probs, axis=1)
+
+cm = confusion_matrix(y_test, y_pred)
+disp = ConfusionMatrixDisplay(
+    confusion_matrix=cm,
+    display_labels=class_names
+)
+
+fig, ax = plt.subplots(figsize=(8, 8))
+disp.plot(ax=ax, xticks_rotation=45, cmap="Blues", colorbar=False)
+plt.title("Fashion-MNIST Confusion Matrix")
+plt.tight_layout()
+plt.show()
+
+# -----------------------------------------------------------
+# 9. Visualize misclassified examples
+# -----------------------------------------------------------
+
+mis_idx = np.where(y_pred != y_test)[0]
+print("Number of misclassified images:", len(mis_idx))
+
+num_to_show = 16
+plt.figure(figsize=(8, 8))
+for i, idx in enumerate(mis_idx[:num_to_show]):
+    plt.subplot(4, 4, i + 1)
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow(x_test[idx].squeeze(), cmap="gray")
+    true_label = class_names[y_test[idx]]
+    pred_label = class_names[y_pred[idx]]
+    plt.xlabel(f"T:{true_label}\nP:{pred_label}", fontsize=8)
+plt.tight_layout()
+plt.show()
+
+# -----------------------------------------------------------
+# 10. Save the trained model
+# -----------------------------------------------------------
+
+model_path = "fashion_mnist_cnn_final.keras"
+model.save(model_path)
+print("Saved model to:", model_path)
+
+# Optional: save to Google Drive in Colab
+# from google.colab import drive
+# drive.mount("/content/drive")
+# drive_model_path = "/content/drive/MyDrive/fashion_mnist_cnn_final.keras"
+# model.save(drive_model_path)
+# print("Saved model to Drive:", drive_model_path)
+
