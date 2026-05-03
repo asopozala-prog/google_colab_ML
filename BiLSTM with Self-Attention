@@ -1,0 +1,212 @@
+## Qualitative evaluation and limitations
+
+While the BiLSTM+attention model reaches ~0.84 accuracy on the IMDB test set,
+it still struggles with nuanced or mixed sentiment.
+
+Examples:
+
+- "Bolt is certainly not one of Disney's greatest hits."
+- "It's not terrible, but it's definitely not good either."
+
+The model assigns probabilities in the 0.51–0.56 range to these cases. With a
+hard 0.5 threshold this is labeled "positive", even though a human reader would
+interpret the sentiment as mildly negative.
+
+This behavior illustrates two important points:
+
+1. The model's probability outputs are **close to 0.5**, which indicates genuine
+   uncertainty rather than a strong positive opinion.
+2. A binary classifier with a simple decision threshold is **not ideal** for
+   representing nuanced human language. In a real system we would:
+   - introduce a third "mixed/uncertain" class or band (e.g. 0.3–0.7), and/or
+   - replace the LSTM baseline with a pretrained Transformer model (e.g. BERT),
+     which captures negation and subtle phrasing more effectively.
+# -----------------------------------------------------------
+# IMDB Sentiment Analysis – BiLSTM with Self-Attention
+# TensorFlow / Keras in Google Colab
+
+import tensorflow as tf
+import tensorflow_datasets as tfds
+from tensorflow.keras import layers, models
+from tensorflow.keras.models import load_model
+
+print("TensorFlow version:", tf.__version__)
+print("GPUs:", tf.config.list_physical_devices("GPU"))
+
+# -----------------------------------------------------------
+# 1. Load IMDB dataset (raw text + labels)
+# -----------------------------------------------------------
+
+train_raw, test_raw = tfds.load(
+    "imdb_reviews",
+    split=["train", "test"],
+    as_supervised=True,  # (text, label)
+)
+
+# -----------------------------------------------------------
+# 2. Build train / validation / test splits with tf.data
+# -----------------------------------------------------------
+
+BUFFER_SIZE = 10_000
+BATCH_SIZE = 64
+
+# Shuffle training data
+train_raw = train_raw.shuffle(
+    BUFFER_SIZE, reshuffle_each_iteration=True
+)
+
+# Validation split from training data
+VAL_SIZE = 5_000
+val_raw = train_raw.take(VAL_SIZE)
+train_raw = train_raw.skip(VAL_SIZE)
+
+# -----------------------------------------------------------
+# 3. TextVectorization and dataset pipeline
+# -----------------------------------------------------------
+
+VOCAB_SIZE = 20_000
+SEQUENCE_LENGTH = 200
+
+vectorize_layer = layers.TextVectorization(
+    max_tokens=VOCAB_SIZE,
+    output_mode="int",
+    output_sequence_length=SEQUENCE_LENGTH,
+)
+
+# Adapt on raw training text (no labels)
+train_text_only = train_raw.map(lambda x, y: x)
+vectorize_layer.adapt(train_text_only)
+
+def vectorize_text(text, label):
+    text = tf.expand_dims(text, -1)  # shape adjustment
+    return vectorize_layer(text), label
+
+train_ds = (
+    train_raw
+    .batch(BATCH_SIZE)
+    .map(vectorize_text)
+    .prefetch(tf.data.AUTOTUNE)
+)
+
+val_ds = (
+    val_raw
+    .batch(BATCH_SIZE)
+    .map(vectorize_text)
+    .prefetch(tf.data.AUTOTUNE)
+)
+
+test_ds = (
+    test_raw
+    .batch(BATCH_SIZE)
+    .map(vectorize_text)
+    .prefetch(tf.data.AUTOTUNE)
+)
+
+# Sanity check
+for batch_x, batch_y in train_ds.take(1):
+    print("Vectorized batch shape:", batch_x.shape)
+    print("Labels batch shape:", batch_y.shape)
+
+# -----------------------------------------------------------
+# 4. Model: Embedding + BiLSTM (return_sequences) + Self-Attention
+# -----------------------------------------------------------
+
+EMBEDDING_DIM = 128
+
+inputs = layers.Input(shape=(SEQUENCE_LENGTH,), dtype="int64")
+
+# 1) Embedding
+x = layers.Embedding(
+    input_dim=VOCAB_SIZE,
+    output_dim=EMBEDDING_DIM,
+    name="word_embedding",
+)(inputs)
+
+# 2) Bidirectional LSTM returning full sequence
+x = layers.Bidirectional(
+    layers.LSTM(64, return_sequences=True)
+)(x)  # (batch, seq_len, 128)
+
+# 3) Self-attention over the sequence
+attended = layers.Attention(name="self_attention")([x, x])
+# (batch, seq_len, 128)
+
+# 4) Pool over time
+x = layers.GlobalAveragePooling1D()(attended)
+
+# 5) Classification head
+x = layers.Dense(64, activation="relu")(x)
+x = layers.Dropout(0.5)(x)
+outputs = layers.Dense(1, activation="sigmoid")(x)
+
+model = models.Model(
+    inputs, outputs, name="imdb_sentiment_lstm_attention"
+)
+model.summary()
+
+# -----------------------------------------------------------
+# 5. Compile and train
+# -----------------------------------------------------------
+
+model.compile(
+    loss="binary_crossentropy",
+    optimizer="adam",
+    metrics=["accuracy"],
+)
+
+EPOCHS = 5  # used in the run that achieved ~0.84 test accuracy
+
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,
+)
+
+# -----------------------------------------------------------
+# 6. Evaluate on the held-out test set
+# -----------------------------------------------------------
+
+test_loss, test_acc = model.evaluate(test_ds)
+print("Test loss:", test_loss)
+print("Test accuracy:", test_acc)
+# In the documented run: test_accuracy ≈ 0.836
+
+# -----------------------------------------------------------
+# 7. Inference on custom reviews
+# -----------------------------------------------------------
+
+def predict_review(text: str, threshold: float = 0.5):
+    """Binary prediction: positive / negative with a configurable threshold."""
+    text_tensor = tf.constant([text])
+    vectorized = vectorize_layer(text_tensor)
+    prob = model.predict(vectorized)[0][0]
+    label = "positive" if prob >= threshold else "negative"
+    return label, float(prob)
+
+# Example nuanced reviews used for qualitative evaluation
+examples = [
+    "An amiable, warm-hearted, inoffensive family animated film about a dog who stars in a popular television show.",
+    "Bolt is certainly not one of Disney's greatest hits.",
+    "I really wanted to like this movie, but it just never clicked for me.",
+    "It's not terrible, but it's definitely not good either.",
+]
+
+for review in examples:
+    label, p = predict_review(review)
+    print("Review:", review)
+    print(f"Prediction: {label} (p={p:.3f})\n")
+
+# -----------------------------------------------------------
+# 8. Save and reload the trained attention model (Keras format)
+# -----------------------------------------------------------
+
+# In Colab, mount Drive before saving:
+# from google.colab import drive
+# drive.mount("/content/drive")
+
+attn_model_path = "/content/drive/MyDrive/imdb_sentiment_lstm_attention.keras"
+model.save(attn_model_path)
+print("Saved attention model to:", attn_model_path)
+
+reloaded_attn_model = load_model(attn_model_path)
+print("Reloaded model name:", reloaded_attn_model.name)
